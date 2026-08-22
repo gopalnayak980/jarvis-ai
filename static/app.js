@@ -150,7 +150,6 @@ function loadWeather() {
       document.getElementById("weatherDesc").textContent = desc;
       document.getElementById("weatherWind").textContent = wind + " km/h";
 
-      // Reverse geocode for city
       fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`)
         .then(r => r.json())
         .then(geo => {
@@ -174,10 +173,10 @@ setInterval(() => { if (!speaking) blink(); }, 3200 + Math.random() * 2000);
 
 // ── Avatar States ──────────────────────────────────────────────────────────
 const moods = {
-  idle:      { icon: "😊", label: "Happy",      color: "var(--c3)" },
-  listening: { icon: "👂", label: "Listening",   color: "var(--c3)" },
-  thinking:  { icon: "🤔", label: "Thinking",    color: "var(--c1)" },
-  speaking:  { icon: "🗣️", label: "Speaking",    color: "var(--c1)" },
+  idle:      { icon: "😊", label: "Happy",    color: "var(--c3)" },
+  listening: { icon: "👂", label: "Listening", color: "var(--c3)" },
+  thinking:  { icon: "🤔", label: "Thinking",  color: "var(--c1)" },
+  speaking:  { icon: "🗣️", label: "Speaking",  color: "var(--c1)" },
 };
 
 function setAvatarState(state) {
@@ -194,54 +193,159 @@ function setAvatarState(state) {
     avatarCore.classList.add("listening");
     avatarPulse.classList.add("active");
     voiceBars.classList.add("active");
-  } else if (state === "thinking") {
-    // subtle
   } else if (state === "speaking") {
     avatarCore.classList.add("speaking");
     avatarPulse.classList.add("active");
   }
 }
 
-// ── Voice Selection (smooth human voice) ──────────────────────────────────
-function getBestVoice(lang) {
-  const voices = window.speechSynthesis.getVoices();
-  const preferred = [
-    "Google UK English Female", "Google UK English Male",
-    "Microsoft Zira", "Microsoft David",
-    "Google हिन्दी", "Microsoft Swara",
-    "Google US English", "en-IN"
-  ];
-  for (const name of preferred) {
-    const v = voices.find(v => v.name.includes(name) || v.lang === name);
-    if (v) return v;
+// ══════════════════════════════════════════════════════════════
+// ── UPGRADED VOICE SYSTEM ─────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+
+// Voice cache — load once, use always
+let allVoices = [];
+let voicesLoaded = false;
+
+// Load voices as soon as possible
+function loadVoices() {
+  allVoices = window.speechSynthesis.getVoices();
+  if (allVoices.length > 0) {
+    voicesLoaded = true;
+    console.log(`✓ ${allVoices.length} voices loaded`);
   }
-  const isHindi = /[\u0900-\u097F]/.test(lang);
-  return voices.find(v => v.lang === (isHindi ? "hi-IN" : "en-IN")) ||
-         voices.find(v => v.lang.startsWith("en")) ||
-         voices[0];
 }
 
-// ── Speak ──────────────────────────────────────────────────────────────────
+// Voices load async in browsers — handle both cases
+loadVoices();
+window.speechSynthesis.onvoiceschanged = () => {
+  loadVoices();
+};
+
+// ── Smart Voice Selector ──────────────────────────────────────
+function getBestVoice(isHindi) {
+  if (!voicesLoaded) loadVoices();
+
+  if (isHindi) {
+    // Priority order for Hindi voices
+    const hindiPriority = [
+      "Google हिन्दी",
+      "Microsoft Swara",
+      "Microsoft Hemant",
+      "hi-IN",
+      "hi_IN",
+    ];
+    for (const name of hindiPriority) {
+      const v = allVoices.find(v =>
+        v.name.includes(name) || v.lang === name || v.lang === "hi-IN"
+      );
+      if (v) {
+        console.log(`✓ Hindi voice: ${v.name}`);
+        return v;
+      }
+    }
+    // Fallback — any Hindi voice
+    return allVoices.find(v => v.lang.startsWith("hi")) || null;
+
+  } else {
+    // Priority order for English voices — most natural ones first
+    const englishPriority = [
+      "Google UK English Female",  // Best female voice
+      "Google UK English Male",    // Best male voice
+      "Microsoft Zira",            // Windows natural female
+      "Microsoft Mark",            // Windows natural male
+      "Microsoft David",           // Windows classic
+      "Google US English",         // US English
+      "Samantha",                  // macOS natural
+      "Daniel",                    // macOS UK
+      "Karen",                     // macOS AU
+      "en-IN",                     // Indian English
+    ];
+    for (const name of englishPriority) {
+      const v = allVoices.find(v =>
+        v.name.includes(name) || v.lang === name
+      );
+      if (v) {
+        console.log(`✓ English voice: ${v.name}`);
+        return v;
+      }
+    }
+    // Fallback — any English voice
+    return allVoices.find(v => v.lang.startsWith("en")) ||
+           allVoices[0] ||
+           null;
+  }
+}
+
+// ── Upgraded speakText ────────────────────────────────────────
 function speakText(text) {
-  if (!('speechSynthesis' in window)) { setAvatarState("idle"); return; }
+  if (!text || !text.trim()) return;
+  if (!('speechSynthesis' in window)) {
+    setAvatarState("idle");
+    return;
+  }
+
+  // Cancel any ongoing speech
   window.speechSynthesis.cancel();
+
   speaking = true;
   setAvatarState("speaking");
 
-  const u = new SpeechSynthesisUtterance(text);
+  // Detect language
   const isHindi = /[\u0900-\u097F]/.test(text);
-  u.lang = isHindi ? "hi-IN" : "en-IN";
-  u.voice = getBestVoice(text);
-  u.pitch = isHindi ? 1.0 : 0.95;
-  u.rate  = isHindi ? 0.85 : 0.88;
-  u.volume = 1;
 
-  u.onend = u.onerror = () => { speaking = false; setAvatarState("idle"); };
-  window.speechSynthesis.speak(u);
+  const u = new SpeechSynthesisUtterance(text);
+
+  // Set language
+  u.lang = isHindi ? "hi-IN" : "en-GB";
+
+  // Get best voice
+  const voice = getBestVoice(isHindi);
+  if (voice) u.voice = voice;
+
+  // Fine-tuned settings for most natural sound
+  if (isHindi) {
+    u.pitch  = 1.0;   // natural pitch
+    u.rate   = 0.82;  // slightly slow — clear Hindi
+    u.volume = 1.0;
+  } else {
+    u.pitch  = 0.9;   // slightly deeper — more like Jarvis
+    u.rate   = 0.85;  // calm, authoritative pace
+    u.volume = 1.0;
+  }
+
+  u.onstart = () => {
+    speaking = true;
+    setAvatarState("speaking");
+  };
+
+  u.onend = () => {
+    speaking = false;
+    setAvatarState("idle");
+  };
+
+  u.onerror = (e) => {
+    console.warn("Speech error:", e.error);
+    speaking = false;
+    setAvatarState("idle");
+  };
+
+  // Small delay ensures voice is ready
+  setTimeout(() => {
+    window.speechSynthesis.speak(u);
+  }, 100);
 }
 
-// voices load async
-window.speechSynthesis.onvoiceschanged = () => {};
+// ── Fix Chrome TTS bug (stops after ~15 seconds) ─────────────
+// Chrome has a bug where long speech stops after 15s
+// This keeps it alive
+setInterval(() => {
+  if (speaking && window.speechSynthesis.speaking) {
+    window.speechSynthesis.resume();
+  }
+}, 10000);
+
+// ══════════════════════════════════════════════════════════════
 
 // ── Speech Recognition ─────────────────────────────────────────────────────
 if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
@@ -357,7 +461,6 @@ async function sendCommand(text) {
   text = text.trim();
   textInput.value = "";
 
-  // Clear chat command
   if (text.toLowerCase().includes("clear chat")) {
     chatWindow.innerHTML = "";
     addMsg("jarvis", "Chat saaf kar diya sir! ✨", true);
